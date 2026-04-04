@@ -3,6 +3,7 @@ import Toolbar from './components/Toolbar'
 import CodePanel from './components/CodePanel'
 import SchematicCanvas from './components/SchematicCanvas'
 import Breadcrumb from './components/Breadcrumb'
+import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
   // Toolbar zoom/fit handlers are passed down as callbacks
@@ -13,16 +14,20 @@ export default function App() {
   const fit     = () => window.dispatchEvent(new CustomEvent('rtl:fit'))
 
   return (
-    <div className="app">
-      <Toolbar onZoomIn={zoomIn} onZoomOut={zoomOut} onFit={fit} />
-      <div className="main">
-        <CodePanel />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <Breadcrumb />
-          <SchematicCanvasWithEvents />
+    <ErrorBoundary>
+      <div className="app">
+        <Toolbar onZoomIn={zoomIn} onZoomOut={zoomOut} onFit={fit} />
+        <div className="main">
+          <CodePanel />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <Breadcrumb />
+            <ErrorBoundary>
+              <SchematicCanvasWithEvents />
+            </ErrorBoundary>
+          </div>
         </div>
       </div>
-    </div>
+    </ErrorBoundary>
   )
 }
 

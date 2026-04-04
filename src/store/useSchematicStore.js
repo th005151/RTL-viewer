@@ -158,15 +158,19 @@ export const useSchematicStore = create((set, get) => ({
     const moduleData = netlist[scope]
     if (!moduleData) return
 
-    // Extract saved positions for this module scope
     const prefix = `${scope}::`
     const saved = {}
     Object.entries(blockPositions).forEach(([k, v]) => {
       if (k.startsWith(prefix)) saved[k.slice(prefix.length)] = v
     })
 
-    const blocks = computeLayout(moduleData, netlist, saved)
-    const wires  = computeWires(blocks, moduleData)
-    set({ blocks, wires })
+    try {
+      const blocks = computeLayout(moduleData, netlist, saved)
+      const wires  = computeWires(blocks, moduleData)
+      set({ blocks, wires, parseError: null })
+    } catch (e) {
+      console.error('Layout error:', e)
+      set({ parseError: `Layout error: ${e.message}` })
+    }
   },
 }))
