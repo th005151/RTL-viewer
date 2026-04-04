@@ -2,53 +2,74 @@ import { create } from 'zustand'
 import { parseVerilog } from '../parser/verilogParser'
 import { computeLayout, computeWires } from '../layout/autoLayout'
 
-const SAMPLE_CODE = `// RTL Schematic Viewer — Sample Design
-// Edit here or upload a .v / .sv file!
+const SAMPLE_CODE = `// RTL Schematic Viewer — Pipeline ALU Demo
+// Demonstrates: sub-modules, DFF (always@posedge), MUX (ternary + case)
+//
+// Double-click any instance block to enter its hierarchy.
 
-module top (
+// ── Top level: pipelined ALU ────────────────────────────────────
+module cpu_pipe (
   input        clk,
-  input        rst_n,
-  input  [7:0] data_in,
-  output [7:0] data_out
-);
-  wire [7:0] mux_out;
-  wire [7:0] pipe_q;
-
-  mux2x1 u_mux (
-    .sel (rst_n),
-    .a   (data_in),
-    .b   (8'h00),
-    .y   (mux_out)
-  );
-
-  dff_8bit u_pipe (
-    .clk (clk),
-    .d   (mux_out),
-    .q   (pipe_q)
-  );
-
-  assign data_out = pipe_q;
-
-endmodule
-
-module mux2x1 (
-  input        sel,
   input  [7:0] a,
   input  [7:0] b,
-  output [7:0] y
+  input        op,
+  output [7:0] result,
+  output       zero
 );
-  assign y = sel ? a : b;
+  wire [7:0] alu_out;
+  reg  [7:0] pipe_r;
+
+  // ALU computes combinationally
+  alu u_alu (
+    .a   (a),
+    .b   (b),
+    .op  (op),
+    .out (alu_out)
+  );
+
+  // Pipeline register — renders as DFF with clock pin
+  always @(posedge clk)
+    pipe_r <= alu_out;
+
+  assign result = pipe_r;
+  assign zero   = op ? pipe_r : alu_out;
+
 endmodule
 
-module dff_8bit (
-  input        clk,
-  input  [7:0] d,
-  output [7:0] q
+// ── ALU: add or subtract selected by op ────────────────────────
+module alu (
+  input  [7:0] a,
+  input  [7:0] b,
+  input        op,
+  output [7:0] out
 );
-  reg [7:0] q_r;
-  always @(posedge clk)
-    q_r <= d;
-  assign q = q_r;
+  wire [7:0] add_out;
+  wire [7:0] sub_out;
+
+  adder      u_add (.a(a), .b(b), .s(add_out));
+  subtractor u_sub (.a(a), .b(b), .d(sub_out));
+
+  // Ternary MUX — renders as trapezoid
+  assign out = op ? sub_out : add_out;
+
+endmodule
+
+// ── Adder ───────────────────────────────────────────────────────
+module adder (
+  input  [7:0] a,
+  input  [7:0] b,
+  output [7:0] s
+);
+  assign s = a + b;
+endmodule
+
+// ── Subtractor ──────────────────────────────────────────────────
+module subtractor (
+  input  [7:0] a,
+  input  [7:0] b,
+  output [7:0] d
+);
+  assign d = a - b;
 endmodule`
 
 export const useSchematicStore = create((set, get) => ({
