@@ -155,6 +155,23 @@ export default function SchematicCanvas() {
     })
   }
 
+  // ── Junction dots: driver pins connected to 2+ loads ────────
+  // Count how many wires start at each (x,y) coordinate
+  const fromCount = new Map()
+  wires.forEach(w => {
+    const k = `${w.fromX},${w.fromY}`
+    fromCount.set(k, (fromCount.get(k) || 0) + 1)
+  })
+  // Junction = same driver pin used by 2+ wire segments
+  const junctions = []
+  fromCount.forEach((count, key) => {
+    if (count < 2) return
+    const [x, y] = key.split(',').map(Number)
+    // Find the net(s) at this point to decide trace colour
+    const net = wires.find(w => w.fromX === x && w.fromY === y)?.net
+    junctions.push({ x, y, net })
+  })
+
   // ── Render ──────────────────────────────────────────────────
 
   if (!blocks.length) {
@@ -197,6 +214,16 @@ export default function SchematicCanvas() {
               wire={w}
               isTraced={tracedNets.has(w.net)}
               onClick={traceNet}
+            />
+          ))}
+
+          {/* Junction dots (fan-out nodes, over wires but under blocks) */}
+          {junctions.map(j => (
+            <circle
+              key={`j_${j.x}_${j.y}`}
+              cx={j.x} cy={j.y} r={3.5}
+              fill={tracedNets.has(j.net) ? '#ffd700' : '#4a9eff'}
+              style={{ pointerEvents: 'none' }}
             />
           ))}
 

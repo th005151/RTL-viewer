@@ -14,8 +14,8 @@ const DFF_W      = 140
 const DFF_H      = 88
 const MUX_W      = 100
 const PIN_SPACING = 26
-const H_GAP      = 160
-const V_GAP      = 36
+const H_GAP      = 180
+const V_GAP      = 40
 const MARGIN     = 80
 
 // ── Public API ──────────────────────────────────────────────────────────────
