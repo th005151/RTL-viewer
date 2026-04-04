@@ -1,18 +1,21 @@
 /**
  * Auto-layout engine for RTL block diagrams.
- * Produces x,y coordinates for blocks and absolute pin positions.
- * Uses a simple hierarchical left-to-right layout:
- *   Level 0 (left)  → input ports
- *   Level 1 (mid)   → module instances (topologically sorted)
- *   Level 2 (right) → output ports
+ * Computes per-instance "depth" (topological column) so wires always flow left → right.
+ *
+ * Column assignment:
+ *   col 0         → module input ports
+ *   col 1..N      → instances, grouped by data-flow depth
+ *   col N+1       → module output ports
  */
 
-const BLOCK_W = 150
+const BLOCK_W     = 150
 const BLOCK_H_MIN = 64
 const PIN_SPACING = 26
-const H_GAP = 180
-const V_GAP = 36
-const MARGIN = 80
+const H_GAP       = 160   // horizontal gap between columns
+const V_GAP       = 36    // vertical gap between blocks in same column
+const MARGIN      = 80
+
+// ── Public API ─────────────────────────────────────────────────
 
 export function computeLayout(moduleData, netlist, savedPositions = {}) {
   const blocks = []
@@ -21,65 +24,78 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
   const outputs = moduleData.ports.filter(p => p.dir === 'output')
   const inouts  = moduleData.ports.filter(p => p.dir === 'inout')
 
-  // ── Input ports ──────────────────────────────────────────────
+  // Compute per-instance column depth
+  const depthMap = computeInstanceDepths(moduleData)
+  const maxDepth = moduleData.instances.length > 0
+    ? Math.max(...Object.values(depthMap), 1)
+    : 0
+
+  // Total columns: input(0) + depths(1..maxDepth) + output(maxDepth+1)
+  const outputCol  = maxDepth + 1
+  const colX = (col) => MARGIN + col * (BLOCK_W + H_GAP)
+
+  // ── Input ports (col 0) ─────────────────────────────────────
   inputs.forEach((port, i) => {
-    blocks.push(makePortBlock('input', port, i, 0))
+    blocks.push(makePortBlock('input', port, 0, i))
   })
   inouts.forEach((port, i) => {
-    blocks.push(makePortBlock('inout', port, inputs.length + i, 0))
+    blocks.push(makePortBlock('inout', port, 0, inputs.length + i))
   })
 
-  // ── Instances (topologically sorted by data flow) ─────────────
-  const sortedInsts = topoSortInstances(moduleData)
-  sortedInsts.forEach((inst, i) => {
-    const instMod = netlist[inst.type]
-    const portDirs = inst.portDirs || {}
+  // ── Instances (col = their depth) ───────────────────────────
+  // Group by column, track per-column index for y-stacking
+  const colCount = {}
+  moduleData.instances.forEach(inst => {
+    const col = depthMap[inst.name] ?? 1
+    const colIdx = colCount[col] ?? 0
+    colCount[col] = colIdx + 1
 
+    const portDirs = inst.portDirs || {}
     const inPins  = Object.keys(inst.connections).filter(p => portDirs[p] !== 'output')
     const outPins = Object.keys(inst.connections).filter(p => portDirs[p] === 'output')
-
     const h = blockHeight(Math.max(inPins.length, outPins.length))
     const id = `inst_${inst.name}`
 
     blocks.push({
       id,
-      kind: 'instance',
-      name: inst.name,
-      type: inst.type,
+      kind:        'instance',
+      name:        inst.name,
+      type:        inst.type,
       connections: inst.connections,
       portDirs,
-      width: BLOCK_W,
-      height: h,
-      inPins:  inPins.map(p => ({ name: p })),
-      outPins: outPins.map(p => ({ name: p })),
-      level: 1,
-      levelIndex: i,
-      canEnter: !!netlist[inst.type],  // double-click available
+      width:       BLOCK_W,
+      height:      h,
+      inPins:      inPins.map(p => ({ name: p })),
+      outPins:     outPins.map(p => ({ name: p })),
+      _col:        col,
+      _colIdx:     colIdx,
+      canEnter:    !!netlist[inst.type],
     })
   })
 
-  // ── Output ports ─────────────────────────────────────────────
+  // ── Output ports (last col) ──────────────────────────────────
   outputs.forEach((port, i) => {
-    blocks.push(makePortBlock('output', port, i, 2))
+    blocks.push(makePortBlock('output', port, outputCol, i))
   })
 
-  // ── Assign target as output blocks (simple assigns only) ──────
-  // Already handled via output ports; complex assigns shown as wires
-
-  // ── Position blocks ───────────────────────────────────────────
-  const colCounts = [0, 0, 0]
-  const levelX    = [MARGIN, MARGIN + BLOCK_W + H_GAP, MARGIN + 2 * (BLOCK_W + H_GAP)]
+  // ── Assign x, y (saved positions override auto) ──────────────
+  // Track per-column y cursor for auto-stacking
+  const colY = {}
 
   blocks.forEach(b => {
-    const idx = colCounts[b.level]++
     const key = b.id
     if (savedPositions[key]) {
       b.x = savedPositions[key].x
       b.y = savedPositions[key].y
     } else {
-      b.x = levelX[b.level]
-      b.y = MARGIN + idx * (BLOCK_H_MIN + V_GAP)
+      const col    = b._col ?? (b.kind === 'output_port' ? outputCol : 0)
+      const startY = colY[col] ?? MARGIN
+      b.x = colX(col)
+      b.y = startY
+      colY[col] = startY + b.height + V_GAP
     }
+    delete b._col
+    delete b._colIdx
   })
 
   // ── Compute absolute pin positions ────────────────────────────
@@ -88,10 +104,8 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
   return blocks
 }
 
-/** Build wire objects by joining drivers to loads via net name */
 export function computeWires(blocks, moduleData) {
-  // Build pin lookup: net → { drivers, loads }
-  const netMap = {}
+  const netMap = {}   // net → { drivers: [], loads: [] }
   const ensure = net => { if (!netMap[net]) netMap[net] = { drivers: [], loads: [] } }
 
   blocks.forEach(b => {
@@ -99,18 +113,19 @@ export function computeWires(blocks, moduleData) {
       ensure(b.name)
       const pin = b.outPins[0]
       if (pin) netMap[b.name].drivers.push({ blockId: b.id, pin })
+
     } else if (b.kind === 'output_port') {
       ensure(b.name)
       const pin = b.inPins[0]
       if (pin) netMap[b.name].loads.push({ blockId: b.id, pin })
+
     } else if (b.kind === 'instance') {
       Object.entries(b.connections).forEach(([portName, netExpr]) => {
         const net = baseName(netExpr)
-        if (!net) return
+        if (!net || /^\d/.test(net)) return   // skip numeric constants
         ensure(net)
         const isOut = b.portDirs[portName] === 'output'
-        const pinList = isOut ? b.outPins : b.inPins
-        const pin = pinList.find(p => p.name === portName)
+        const pin   = (isOut ? b.outPins : b.inPins).find(p => p.name === portName)
         if (!pin) return
         if (isOut) netMap[net].drivers.push({ blockId: b.id, pin })
         else       netMap[net].loads.push({ blockId: b.id, pin })
@@ -118,29 +133,23 @@ export function computeWires(blocks, moduleData) {
     }
   })
 
-  // Handle simple assign statements: assign target = src
-  if (moduleData.assigns) {
-    moduleData.assigns.forEach(({ target, expr }) => {
-      const src = baseName(expr)
-      if (!src) return
-      ensure(src)
-      ensure(target)
-      // Create a virtual "pass-through": src drivers → target loads
-      // This is done by merging: target loads will be driven by src drivers
-      // We handle this at wire-building time below
-      netMap[target]._assignSrc = src
-    })
-  }
+  // Simple assign: treat as wire-through (src drivers → target loads)
+  moduleData.assigns?.forEach(({ target, expr }) => {
+    const src = baseName(expr)
+    if (!src || /^\d/.test(src)) return
+    ensure(src)
+    ensure(target)
+    netMap[target]._assignSrc = src
+  })
 
   // Build wire segments
   const wires = []
-  const seen = new Set()
+  const seen  = new Set()
 
   Object.entries(netMap).forEach(([net, { drivers, loads, _assignSrc }]) => {
-    let actualDrivers = drivers
-    if (_assignSrc && netMap[_assignSrc]) {
-      actualDrivers = [...drivers, ...netMap[_assignSrc].drivers]
-    }
+    const actualDrivers = _assignSrc && netMap[_assignSrc]
+      ? [...drivers, ...netMap[_assignSrc].drivers]
+      : drivers
 
     actualDrivers.forEach(driver => {
       loads.forEach(load => {
@@ -152,10 +161,10 @@ export function computeWires(blocks, moduleData) {
           net,
           fromX: driver.pin.x,
           fromY: driver.pin.y,
-          toX: load.pin.x,
-          toY: load.pin.y,
+          toX:   load.pin.x,
+          toY:   load.pin.y,
           fromBlockId: driver.blockId,
-          toBlockId: load.blockId,
+          toBlockId:   load.blockId,
         })
       })
     })
@@ -164,21 +173,20 @@ export function computeWires(blocks, moduleData) {
   return wires
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Layout helpers ──────────────────────────────────────────────
 
-function makePortBlock(dirKind, port, index, level) {
-  const isInput = dirKind === 'input' || dirKind === 'inout'
-  const kind = `${dirKind}_port`
+function makePortBlock(dirKind, port, col, rowIndex) {
+  const isInput = dirKind !== 'output'
   return {
-    id: `port_${dirKind}_${port.name}`,
-    kind,
-    name: port.name,
-    width: BLOCK_W,
-    height: BLOCK_H_MIN,
+    id:      `port_${dirKind}_${port.name}`,
+    kind:    `${dirKind}_port`,
+    name:    port.name,
+    width:   BLOCK_W,
+    height:  BLOCK_H_MIN,
     inPins:  isInput ? [] : [{ name: port.name }],
     outPins: isInput ? [{ name: port.name }] : [],
-    level,
-    levelIndex: index,
+    _col:    col,
+    _colIdx: rowIndex,
   }
 }
 
@@ -187,8 +195,7 @@ function blockHeight(maxPins) {
 }
 
 function setPinPositions(block) {
-  const { x, y, height, inPins, outPins, width } = block
-
+  const { x, y, height, width, inPins, outPins } = block
   inPins.forEach((pin, i) => {
     pin.x = x
     pin.y = y + height * (i + 1) / (inPins.length + 1)
@@ -199,56 +206,88 @@ function setPinPositions(block) {
   })
 }
 
-/** Simple topological sort of instances by data-flow dependency */
-function topoSortInstances(moduleData) {
-  const insts = moduleData.instances
-  if (insts.length <= 1) return insts
+// ── Topological depth computation ──────────────────────────────
+/**
+ * Assigns each instance a column depth (1, 2, 3, ...) based on
+ * how many "hops" away from the module inputs it is.
+ * Instances fed directly by module inputs → depth 1.
+ * Instances fed by depth-1 instances → depth 2. Etc.
+ */
+function computeInstanceDepths(moduleData) {
+  const insts   = moduleData.instances
+  const depthOf = {}   // instName → depth
+  const netDepth = {}  // net → depth it becomes available
 
-  // Build driven-net sets for each instance (output nets)
-  const instOutputNets = insts.map(inst =>
-    new Set(
-      Object.entries(inst.connections)
-        .filter(([p]) => inst.portDirs[p] === 'output')
-        .map(([, v]) => baseName(v))
-        .filter(Boolean)
-    )
-  )
+  // Module input ports are available at depth 0
+  moduleData.ports.filter(p => p.dir === 'input' || p.dir === 'inout')
+    .forEach(p => { netDepth[p.name] = 0 })
 
-  const order = []
-  const visited = new Set()
-  const visiting = new Set()
+  // Assigns: if src is known, target becomes available at same depth
+  // (handled iteratively below)
 
-  const visit = (i) => {
-    if (visited.has(i)) return
-    if (visiting.has(i)) return // cycle — skip
-    visiting.add(i)
+  // Iterative relaxation (handles chains of any length)
+  let changed = true
+  let guard   = 0
+  while (changed && guard++ < 200) {
+    changed = false
+    insts.forEach(inst => {
+      const portDirs = inst.portDirs || {}
 
-    // Find dependencies: instances whose outputs feed into inst[i]'s inputs
-    const inputNets = new Set(
-      Object.entries(insts[i].connections)
-        .filter(([p]) => insts[i].portDirs[p] !== 'output')
-        .map(([, v]) => baseName(v))
-        .filter(Boolean)
-    )
+      // Depths of all nets feeding into this instance's inputs
+      const inputDepths = Object.entries(inst.connections)
+        .filter(([p]) => portDirs[p] !== 'output')
+        .map(([, v]) => {
+          const net = baseName(v)
+          return (net && !(/^\d/.test(net)) && netDepth[net] !== undefined)
+            ? netDepth[net]
+            : null
+        })
+        .filter(d => d !== null)
 
-    insts.forEach((_, j) => {
-      if (j === i) return
-      for (const net of instOutputNets[j]) {
-        if (inputNets.has(net)) { visit(j); break }
+      // Depth of this instance = max(input depths) + 1, min 1
+      const myDepth = inputDepths.length > 0
+        ? Math.max(...inputDepths) + 1
+        : 1
+
+      if (depthOf[inst.name] !== myDepth) {
+        depthOf[inst.name] = myDepth
+        changed = true
       }
+
+      // Instance output nets become available at this depth
+      Object.entries(inst.connections)
+        .filter(([p]) => portDirs[p] === 'output')
+        .forEach(([, v]) => {
+          const net = baseName(v)
+          if (net && !(/^\d/.test(net))) {
+            if (netDepth[net] === undefined || netDepth[net] < myDepth) {
+              netDepth[net] = myDepth
+              changed = true
+            }
+          }
+        })
     })
 
-    visiting.delete(i)
-    visited.add(i)
-    order.push(insts[i])
+    // Propagate simple assigns
+    moduleData.assigns?.forEach(({ target, expr }) => {
+      const src = baseName(expr)
+      if (src && netDepth[src] !== undefined && netDepth[target] === undefined) {
+        netDepth[target] = netDepth[src]
+        changed = true
+      }
+    })
   }
 
-  insts.forEach((_, i) => visit(i))
-  return order
+  // Default depth 1 for anything still unresolved
+  insts.forEach(inst => {
+    if (depthOf[inst.name] === undefined) depthOf[inst.name] = 1
+  })
+
+  return depthOf
 }
 
 function baseName(expr) {
   if (!expr) return ''
-  const m = expr.match(/^(\w+)/)
+  const m = expr.match(/^([A-Za-z_]\w*)/)  // must start with letter/_
   return m ? m[1] : ''
 }
