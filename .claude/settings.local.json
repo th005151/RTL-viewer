@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(/c/Users/HuJ/AppData/Roaming/nvm/current/node.exe --version)",
+      "Bash(cmd.exe /c \"node --version\")",
+      "Bash(cmd.exe /c \"npm --version\")",
+      "Bash(cmd.exe /c \"where node 2>&1 & where npm 2>&1\")",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(cmd.exe /c \"git --version\")",
+      "Bash(cmd.exe /c \"git --version && echo OK\")",
+      "Bash(cmd.exe /c \"echo test\")",
+      "Bash(powershell.exe -Command \"git --version\")",
+      "Bash(powershell.exe -Command \"cd 'C:\\\\Users\\\\HuJ\\\\Desktop\\\\project1'; git status\")",
+      "Bash(powershell.exe -Command ':*)"
+    ]
+  }
+}
