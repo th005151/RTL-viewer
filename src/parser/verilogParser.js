@@ -71,14 +71,14 @@ function parseModuleBody(name, portDecl, body) {
 function parsePorts(portDecl, body) {
   const ports = []
   const seen  = new Set()
-  const re    = /\b(input|output|inout)\s+(?:(?:wire|reg|logic|signed|unsigned)\s+)*(?:\[(\d+)\s*:\s*(\d+)\]\s+)?(\w+(?:\s*,\s*\w+)*)/g
+  const re    = /\b(input|output|inout)\s+(?:(?:wire|reg|logic|signed|unsigned)\s+)*(?:\[(\d+)\s*:\s*(\d+)\]\s+)?(\w+(?:[ \t]*,[ \t]*\w+)*)/g
   const area  = portDecl + '\n' + body
   let m
   while ((m = re.exec(area)) !== null) {
     const [, dir, msb = '0', lsb = '0', names] = m
     const width = Math.abs(parseInt(msb) - parseInt(lsb)) + 1
     names.split(',').map(s => s.trim()).filter(Boolean).forEach(portName => {
-      if (!seen.has(portName)) {
+      if (!seen.has(portName) && !SV_KEYWORDS.has(portName)) {
         seen.add(portName)
         ports.push({ name: portName, dir, width })
       }
