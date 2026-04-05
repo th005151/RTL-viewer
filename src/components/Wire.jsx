@@ -53,15 +53,36 @@ function buildPath(fromX, fromY, toX, toY) {
   )
 }
 
+/**
+ * Compute a good label anchor point on the wire:
+ * - Forward (Z-bend): midpoint of the vertical segment (at bendX, midY)
+ * - Horizontal: midpoint of the line
+ * - Backward (U-route): midpoint of the top horizontal channel
+ */
+function labelPos(fromX, fromY, toX, toY) {
+  if (Math.abs(toY - fromY) < 0.5) {
+    // Horizontal — label at midpoint, slightly above
+    return { x: (fromX + toX) / 2, y: fromY - 6, anchor: 'middle' }
+  }
+  if (toX > fromX + 2) {
+    // Forward Z-bend — label on the vertical segment, offset left
+    const bendX = Math.round(fromX + (toX - fromX) * 0.4)
+    const midY  = (fromY + toY) / 2
+    return { x: bendX - 5, y: midY, anchor: 'end' }
+  }
+  // Backward U-route — label at middle of top channel
+  const rx1    = fromX + 28
+  const rx2    = toX  - 28
+  const routeY = Math.min(fromY, toY) - 36
+  return { x: (rx1 + rx2) / 2, y: routeY - 5, anchor: 'middle' }
+}
+
 export default function Wire({ wire, isTraced, onClick }) {
   const { fromX, fromY, toX, toY, net } = wire
   const d     = buildPath(fromX, fromY, toX, toY)
   const color = isTraced ? WIRE_TRACED : WIRE_COLOR
   const width = isTraced ? WIRE_W_TR   : WIRE_W
-
-  // Label at the bend point (40% along X)
-  const labelX = fromX + (toX - fromX) * 0.4
-  const labelY = fromY - 7
+  const lp    = labelPos(fromX, fromY, toX, toY)
 
   return (
     <g onClick={() => onClick(net)} style={{ cursor: 'pointer' }}>
@@ -77,20 +98,18 @@ export default function Wire({ wire, isTraced, onClick }) {
         opacity={isTraced ? 1 : 0.75}
       />
 
-      {/* Net label (shown only when traced) */}
-      {isTraced && (
-        <text
-          x={labelX}
-          y={labelY}
-          textAnchor="middle"
-          fill={WIRE_TRACED}
-          fontSize={9}
-          fontFamily="'Fira Code','Consolas',monospace"
-          style={{ pointerEvents: 'none' }}
-        >
-          {net}
-        </text>
-      )}
+      {/* Net label — always visible */}
+      <text
+        x={lp.x}
+        y={lp.y}
+        textAnchor={lp.anchor}
+        fill={isTraced ? WIRE_TRACED : '#6b8caa'}
+        fontSize={9}
+        fontFamily="'Fira Code','Consolas',monospace"
+        style={{ pointerEvents: 'none' }}
+      >
+        {net}
+      </text>
     </g>
   )
 }
