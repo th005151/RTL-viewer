@@ -60,10 +60,17 @@ function parseModuleBody(name, portDecl, body) {
   ;[...alwaysMuxes, ...ternaryMuxes].forEach(mx => { muxById[mx.id] = mx })
   const synthMuxes = Object.values(muxById)
 
-  // Simple assigns (exclude ternary, which became MUX blocks)
-  const assigns = parseAssigns(body).filter(({ expr }) => !expr.includes('?'))
+  // Gate assigns (simple binary/unary operations)
+  const synthGates  = parseGateAssigns(body)
+  const gateOutNets = new Set(synthGates.map(g => g.outNet))
+  const muxOutNets  = new Set(synthMuxes.map(mx => mx.outNet))
 
-  return { name, ports, instances, wires, assigns, synthDFFs, synthMuxes }
+  // Plain wire-through assigns only — exclude ternary, gate-driven, mux-driven
+  const assigns = parseAssigns(body).filter(({ target, expr }) =>
+    !expr.includes('?') && !gateOutNets.has(target) && !muxOutNets.has(target)
+  )
+
+  return { name, ports, instances, wires, assigns, synthDFFs, synthMuxes, synthGates }
 }
 
 // ── Port / instance / wire / assign parsers ─────────────────────────────────
@@ -135,6 +142,68 @@ function parseAssigns(body) {
 }
 
 // ── Synthetic block parsers ──────────────────────────────────────────────────
+
+// ── Gate-assign parser ───────────────────────────────────────────────────────
+
+const OP_TO_GATE = {
+  '&': 'and', '&&': 'and',
+  '|': 'or',  '||': 'or',
+  '^': 'xor',
+  '~^': 'xnor', '^~': 'xnor',
+  '~&': 'nand', '~|': 'nor',
+  '~': 'not',   '!': 'not',
+  '+': 'add',
+  '-': 'sub',
+  '*': 'mul',
+  '/': 'div',
+  '==': 'eq',  '===': 'eq',
+  '!=': 'neq', '!==': 'neq',
+  '<':  'lt',  '>':   'gt',
+  '<=': 'leq', '>=':  'geq',
+  '<<': 'shl', '<<<': 'shl',
+  '>>': 'shr', '>>>': 'shr',
+}
+
+/**
+ * Detect simple one- or two-operand assign statements and convert them to
+ * gate blocks.  Complex expressions (multi-operator, parenthesised, etc.)
+ * are left alone so they fall through to plain wire-through assigns.
+ */
+function parseGateAssigns(body) {
+  const gates = []
+  const re = /\bassign\s+(\w+)\s*=\s*([^;]+);/g
+  let m
+  while ((m = re.exec(body)) !== null) {
+    const target = m[1].trim()
+    const expr   = m[2].trim()
+    if (expr.includes('?')) continue   // ternary → MUX
+    const gate = tryGateExpr(expr, target)
+    if (gate) gates.push(gate)
+  }
+  return gates
+}
+
+function tryGateExpr(expr, outNet) {
+  // Unary: ~a  or  !a
+  const uniM = expr.match(/^([~!])\s*([A-Za-z_]\w*)$/)
+  if (uniM) {
+    const gt = OP_TO_GATE[uniM[1]]
+    if (!gt) return null
+    return { id: `_gate_${outNet}`, kind: 'gate', gateType: gt,
+             inputs: [uniM[2]], outNet }
+  }
+  // Binary: ident OP ident  (multi-char ops checked before single-char)
+  const binM = expr.match(
+    /^([A-Za-z_]\w*)\s*(===|!==|<<<|>>>|~\^|\^~|~&|~\||<=|>=|<<|>>|==|!=|&&|\|\||[&|^+\-*/<>])\s*([A-Za-z_]\w*)$/
+  )
+  if (binM) {
+    const gt = OP_TO_GATE[binM[2]]
+    if (!gt) return null
+    return { id: `_gate_${outNet}`, kind: 'gate', gateType: gt,
+             inputs: [binM[1], binM[3]], outNet }
+  }
+  return null
+}
 
 /** assign out = sel ? a : b  →  MUX block */
 function parseTernaryAssigns(body) {
@@ -286,6 +355,7 @@ function inferPortDirections(modules) {
     mod.assigns.forEach(a => drivenNets.add(a.target))
     mod.synthDFFs?.forEach(d  => drivenNets.add(d.regName))
     mod.synthMuxes?.forEach(mx => drivenNets.add(mx.outNet))
+    mod.synthGates?.forEach(g  => drivenNets.add(g.outNet))
 
     mod.instances.forEach(inst => {
       const instMod = modules[inst.type]

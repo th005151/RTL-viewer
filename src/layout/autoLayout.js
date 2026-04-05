@@ -18,6 +18,25 @@ const H_GAP      = 180
 const V_GAP      = 40
 const MARGIN     = 80
 
+// Logic gate dimensions (AND/OR/XOR/NAND/NOR/XNOR)
+const GATE_LOGIC_W = 72
+const GATE_LOGIC_H = 52
+// NOT/BUF gate (triangle)
+const GATE_NOT_W   = 68
+const GATE_NOT_H   = 44
+// Arithmetic, comparison, shift (labeled rectangle)
+const GATE_ARITH_W = 64
+const GATE_ARITH_H = 56
+
+const GATE_LOGIC_TYPES = new Set(['and','or','xor','nand','nor','xnor','buf'])
+const GATE_NOT_TYPES   = new Set(['not'])
+
+function gateSize(gateType) {
+  if (GATE_NOT_TYPES.has(gateType))   return { w: GATE_NOT_W,   h: GATE_NOT_H }
+  if (GATE_LOGIC_TYPES.has(gateType)) return { w: GATE_LOGIC_W, h: GATE_LOGIC_H }
+  return { w: GATE_ARITH_W, h: GATE_ARITH_H }
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export function computeLayout(moduleData, netlist, savedPositions = {}) {
@@ -111,6 +130,26 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
     })
   })
 
+  // ── Synthetic gate blocks ─────────────────────────────────────────
+  moduleData.synthGates?.forEach(gate => {
+    const col    = depthOf[gate.id] ?? 1
+    const colIdx = bump(col)
+    const { w, h } = gateSize(gate.gateType)
+    blocks.push({
+      id:       gate.id,
+      kind:     'gate',
+      gateType: gate.gateType,
+      inputs:   gate.inputs,
+      outNet:   gate.outNet,
+      width:    w,
+      height:   h,
+      inPins:   gate.inputs.map((_, i) => ({ name: `in${i}` })),
+      outPins:  [{ name: 'y' }],
+      _col: col, _colIdx: colIdx,
+      canEnter: false,
+    })
+  })
+
   // ── Output ports (last col) ──────────────────────────────────────
   outputs.forEach((port, i) => blocks.push(makePortBlock('output', port, outputCol, i)))
 
@@ -178,6 +217,17 @@ export function computeWires(blocks, moduleData) {
       ensure(b.regName)
       const qPin = b.outPins[0]
       if (qPin) netMap[b.regName].drivers.push({ blockId: b.id, pin: qPin })
+
+    } else if (b.kind === 'gate') {
+      b.inputs.forEach((net, i) => {
+        if (!net || /^\d/.test(net)) return
+        ensure(net)
+        const pin = b.inPins[i]
+        if (pin) netMap[net].loads.push({ blockId: b.id, pin })
+      })
+      ensure(b.outNet)
+      const yPin = b.outPins[0]
+      if (yPin) netMap[b.outNet].drivers.push({ blockId: b.id, pin: yPin })
 
     } else if (b.kind === 'mux') {
       // Data inputs
@@ -294,6 +344,19 @@ function setPinPositions(block) {
     return
   }
 
+  if (block.kind === 'gate') {
+    // Single output always at right center
+    if (outPins[0]) { outPins[0].x = x + width; outPins[0].y = y + height * 0.5 }
+    // Inputs evenly distributed on left
+    const n = inPins.length
+    if (n === 1) {
+      inPins[0].x = x; inPins[0].y = y + height * 0.5
+    } else {
+      inPins.forEach((pin, i) => { pin.x = x; pin.y = y + height * (i + 1) / (n + 1) })
+    }
+    return
+  }
+
   // Default: distribute evenly on left/right
   inPins.forEach((pin, i) => {
     pin.x = x
@@ -344,6 +407,14 @@ function computeAllDepths(moduleData) {
     })
   })
 
+  moduleData.synthGates?.forEach(gate => {
+    vInsts.push({
+      id: gate.id,
+      inputNets:  gate.inputs.filter(n => n && !/^\d/.test(n)),
+      outputNets: [gate.outNet].filter(Boolean),
+    })
+  })
+
   // Iterative relaxation
   const depthOf  = {}
   const netDepth = {}
@@ -375,11 +446,19 @@ function computeAllDepths(moduleData) {
       })
     })
 
-    // Propagate simple assigns
+    // Propagate simple wire-through assigns
     moduleData.assigns?.forEach(({ target, expr }) => {
       const src = baseName(expr)
       if (src && netDepth[src] !== undefined && netDepth[target] === undefined) {
         netDepth[target] = netDepth[src]
+        changed = true
+      }
+    })
+    // Propagate gate output nets so downstream blocks get correct depth
+    moduleData.synthGates?.forEach(gate => {
+      const d = depthOf[gate.id]
+      if (d !== undefined && netDepth[gate.outNet] === undefined) {
+        netDepth[gate.outNet] = d
         changed = true
       }
     })

@@ -2,74 +2,70 @@ import { create } from 'zustand'
 import { parseVerilog } from '../parser/verilogParser'
 import { computeLayout, computeWires } from '../layout/autoLayout'
 
-const SAMPLE_CODE = `// RTL Schematic Viewer — Pipeline ALU Demo
-// Demonstrates: sub-modules, DFF (always@posedge), MUX (ternary + case)
-//
-// Double-click any instance block to enter its hierarchy.
+const SAMPLE_CODE = `// RTL Schematic Viewer — Gate Icon Demo
+// Each assign with a simple operator renders as its own icon:
+//   &/| /^/~/!  →  AND / OR / XOR / NOT gate shape
+//   + / - / *   →  ADD / SUB / MUL block
+//   == / != / < →  comparator block
+//   << / >>      →  shift block
+//   ? :          →  MUX trapezoid
+//   always@posedge → DFF rectangle with clock symbol
+// Double-click any instance to enter its hierarchy.
 
-// ── Top level: pipelined ALU ────────────────────────────────────
-module cpu_pipe (
+// ── Top: filter-pipeline ───────────────────────────────────────
+module top (
   input        clk,
   input  [7:0] a,
   input  [7:0] b,
-  input        op,
+  input        sel,
   output [7:0] result,
-  output       zero
+  output       flag
 );
-  wire [7:0] alu_out;
+  wire [7:0] mux_out;
+  wire [7:0] shifted;
+  wire [7:0] pipe_out;
   reg  [7:0] pipe_r;
 
-  // ALU computes combinationally
-  alu u_alu (
-    .a   (a),
-    .b   (b),
-    .op  (op),
-    .out (alu_out)
-  );
+  alu u_alu (.a(a), .b(b), .sel(sel), .out(mux_out));
 
-  // Pipeline register — renders as DFF with clock pin
+  // Shift block icon
+  assign shifted = mux_out >> a;
+
+  // DFF — pipeline register
   always @(posedge clk)
-    pipe_r <= alu_out;
+    pipe_r <= shifted;
 
-  assign result = pipe_r;
-  assign zero   = op ? pipe_r : alu_out;
+  assign pipe_out = pipe_r;
+
+  // Comparator icon
+  assign flag   = pipe_out == b;
+  assign result = pipe_out;
 
 endmodule
 
-// ── ALU: add or subtract selected by op ────────────────────────
+// ── ALU: arithmetic + logic + MUX ─────────────────────────────
 module alu (
   input  [7:0] a,
   input  [7:0] b,
-  input        op,
+  input        sel,
   output [7:0] out
 );
-  wire [7:0] add_out;
-  wire [7:0] sub_out;
+  wire [7:0] sum;
+  wire [7:0] diff;
+  wire [7:0] bitand;
+  wire [7:0] bitor;
 
-  adder      u_add (.a(a), .b(b), .s(add_out));
-  subtractor u_sub (.a(a), .b(b), .d(sub_out));
+  // Arithmetic gate icons
+  assign sum    = a + b;
+  assign diff   = a - b;
 
-  // Ternary MUX — renders as trapezoid
-  assign out = op ? sub_out : add_out;
+  // Logic gate icons
+  assign bitand = a & b;
+  assign bitor  = a | b;
 
-endmodule
+  // MUX trapezoid selects result
+  assign out = sel ? diff : sum;
 
-// ── Adder ───────────────────────────────────────────────────────
-module adder (
-  input  [7:0] a,
-  input  [7:0] b,
-  output [7:0] s
-);
-  assign s = a + b;
-endmodule
-
-// ── Subtractor ──────────────────────────────────────────────────
-module subtractor (
-  input  [7:0] a,
-  input  [7:0] b,
-  output [7:0] d
-);
-  assign d = a - b;
 endmodule`
 
 export const useSchematicStore = create((set, get) => ({
