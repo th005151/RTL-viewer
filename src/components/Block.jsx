@@ -13,6 +13,8 @@ const THEME = {
   gate_arith:  { fill: '#071e14', stroke: '#4ade80', label: '#e6edf3' },  // green    — +/−/×/÷
   gate_cmp:    { fill: '#160a2c', stroke: '#c084fc', label: '#e6edf3' },  // purple   — ==/!=/</>/…
   gate_shift:  { fill: '#1e1700', stroke: '#facc15', label: '#e6edf3' },  // yellow   — <</>>
+  // constant literal
+  const:       { fill: '#1c1c1c', stroke: '#777',    label: '#c9d1d9' },  // grey     — numeric constants
 }
 
 const GATE_LOGIC_TYPES = new Set(['and','or','xor','nand','nor','xnor','not','buf'])
@@ -205,6 +207,43 @@ function GateBlock({ block, isTraced, onDragStart, onDoubleClick }) {
   )
 }
 
+// ── ConstBlock component ─────────────────────────────────────────────────────
+function ConstBlock({ block, isTraced, onDragStart, onDoubleClick }) {
+  const { id, value, width: W, height: H, outPins, x, y } = block
+  const theme = THEME.const
+
+  const handleMouseDown = e => { if (e.button !== 0) return; e.stopPropagation(); onDragStart(id, e) }
+  const handleDblClick  = e => { e.stopPropagation(); onDoubleClick(block, e) }
+
+  const yPin = outPins[0]
+
+  return (
+    <g transform={`translate(${x},${y})`}
+      onMouseDown={handleMouseDown} onDoubleClick={handleDblClick}
+      style={{ cursor: 'grab' }} data-block-id={id}>
+
+      {/* Dashed border marks it as a constant source */}
+      <rect width={W} height={H} rx={5}
+        fill={isTraced ? 'rgba(255,215,0,0.12)' : theme.fill}
+        stroke={isTraced ? '#ffd700' : theme.stroke}
+        strokeWidth={isTraced ? 2 : 1.5}
+        strokeDasharray="4 2" />
+
+      <text x={W / 2} y={H / 2 + 4} textAnchor="middle"
+        fill={isTraced ? '#ffd700' : theme.label}
+        fontSize={10} fontFamily={FONT} fontWeight="600"
+        style={{ pointerEvents: 'none' }}>
+        {value}
+      </text>
+
+      {yPin && (
+        <circle cx={W} cy={yPin.y - y} r={PIN_R}
+          fill={isTraced ? '#ffd700' : theme.stroke} opacity={0.9} />
+      )}
+    </g>
+  )
+}
+
 // ── Main Block dispatcher ─────────────────────────────────────────────────────
 export default function Block({ block, isTraced, onDragStart, onDoubleClick }) {
   const { id, kind, name, type, width, height, inPins, outPins, x, y, canEnter } = block
@@ -218,6 +257,12 @@ export default function Block({ block, isTraced, onDragStart, onDoubleClick }) {
   const handleDblClick = e => {
     e.stopPropagation()
     onDoubleClick(block, e)
+  }
+
+  // ── Constant literal block ────────────────────────────────────────────
+  if (kind === 'const') {
+    return <ConstBlock block={block} isTraced={isTraced}
+             onDragStart={onDragStart} onDoubleClick={onDoubleClick} />
   }
 
   // ── Gate block ────────────────────────────────────────────────────────

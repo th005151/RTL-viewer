@@ -286,7 +286,13 @@ function parseExprTokens(tokens) {
 function astToBlocks(ast, outNet, gates, muxes, counter) {
   if (!ast) return null
   if (ast.type === 'id')  return ast.name      // leaf: existing net
-  if (ast.type === 'num') return null           // constant: no net
+
+  if (ast.type === 'num') {
+    // Numeric constant → synthesise a const block that drives a fresh net
+    const net = outNet ?? `_c${counter.n++}`
+    gates.push({ id: `_const_${net}`, kind: 'const', value: ast.value, outNet: net })
+    return net
+  }
 
   const net = outNet ?? `_e${counter.n++}`
 

@@ -28,6 +28,10 @@ const GATE_NOT_H   = 44
 const GATE_ARITH_W = 64
 const GATE_ARITH_H = 56
 
+// Constant literal block
+const CONST_W = 72
+const CONST_H = 30
+
 const GATE_LOGIC_TYPES = new Set(['and','or','xor','nand','nor','xnor','buf'])
 const GATE_NOT_TYPES   = new Set(['not'])
 
@@ -130,8 +134,27 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
     })
   })
 
-  // ── Synthetic gate blocks ─────────────────────────────────────────
+  // ── Synthetic gate blocks (+ constant blocks) ────────────────────
   moduleData.synthGates?.forEach(gate => {
+    // Constant literal blocks — placed at col 0 like input ports
+    if (gate.kind === 'const') {
+      const col    = 0
+      const colIdx = bump(col)
+      blocks.push({
+        id:      gate.id,
+        kind:    'const',
+        value:   gate.value,
+        outNet:  gate.outNet,
+        width:   CONST_W,
+        height:  CONST_H,
+        inPins:  [],
+        outPins: [{ name: 'y' }],
+        _col: col, _colIdx: colIdx,
+        canEnter: false,
+      })
+      return
+    }
+
     const col    = depthOf[gate.id] ?? 1
     const colIdx = bump(col)
     const { w, h } = gateSize(gate.gateType)
@@ -217,6 +240,11 @@ export function computeWires(blocks, moduleData) {
       ensure(b.regName)
       const qPin = b.outPins[0]
       if (qPin) netMap[b.regName].drivers.push({ blockId: b.id, pin: qPin })
+
+    } else if (b.kind === 'const') {
+      ensure(b.outNet)
+      const yPin = b.outPins[0]
+      if (yPin) netMap[b.outNet].drivers.push({ blockId: b.id, pin: yPin })
 
     } else if (b.kind === 'gate') {
       b.inputs.forEach((net, i) => {
@@ -314,6 +342,12 @@ function blockHeight(maxPins) {
 
 function setPinPositions(block) {
   const { x, y, height, width, inPins, outPins } = block
+
+  if (block.kind === 'const') {
+    // No inputs; single output pin at right center
+    if (outPins[0]) { outPins[0].x = x + width; outPins[0].y = y + height * 0.5 }
+    return
+  }
 
   if (block.kind === 'dff') {
     // D pin: left side, upper third
@@ -421,6 +455,12 @@ function computeAllDepths(moduleData) {
 
   moduleData.ports.filter(p => p.dir === 'input' || p.dir === 'inout')
     .forEach(p => { netDepth[p.name] = 0 })
+
+  // Constants are depth-0 sources (like input ports)
+  moduleData.synthGates?.filter(g => g.kind === 'const').forEach(c => {
+    netDepth[c.outNet] = 0
+    depthOf[c.id] = 0
+  })
 
   let changed = true, guard = 0
   while (changed && guard++ < 200) {
