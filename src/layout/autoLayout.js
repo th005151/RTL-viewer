@@ -35,10 +35,84 @@ const CONST_H = 30
 const GATE_LOGIC_TYPES = new Set(['and','or','xor','nand','nor','xnor','buf'])
 const GATE_NOT_TYPES   = new Set(['not'])
 
+// ── Wire obstacle-avoidance constants ───────────────────────────────────────
+const ROUTE_PAD = 10   // clearance (px) around block bounding boxes
+
 function gateSize(gateType) {
   if (GATE_NOT_TYPES.has(gateType))   return { w: GATE_NOT_W,   h: GATE_NOT_H }
   if (GATE_LOGIC_TYPES.has(gateType)) return { w: GATE_LOGIC_W, h: GATE_LOGIC_H }
   return { w: GATE_ARITH_W, h: GATE_ARITH_H }
+}
+
+// ── Wire obstacle-avoidance helpers ─────────────────────────────────────────
+
+/** True if a vertical segment at x (spanning y1..y2) clips any obstacle block. */
+function vertSegBlocked(x, y1, y2, obs) {
+  const lo = Math.min(y1, y2), hi = Math.max(y1, y2)
+  return obs.some(b =>
+    x  > b.x - ROUTE_PAD           && x  < b.x + b.width  + ROUTE_PAD &&
+    hi > b.y + ROUTE_PAD           && lo < b.y + b.height - ROUTE_PAD
+  )
+}
+
+/** True if a horizontal segment at y (spanning x1..x2) clips any obstacle block. */
+function horizSegBlocked(y, x1, x2, obs) {
+  const lo = Math.min(x1, x2), hi = Math.max(x1, x2)
+  return obs.some(b =>
+    hi > b.x + ROUTE_PAD           && lo < b.x + b.width  - ROUTE_PAD &&
+    y  > b.y + ROUTE_PAD           && y  < b.y + b.height - ROUTE_PAD
+  )
+}
+
+/**
+ * For a forward Z-bend (toX > fromX + 2) find the bendX closest to the
+ * default (40%) position that makes all three segments obstacle-free.
+ */
+function findClearBendX(fromX, fromY, toX, toY, obs) {
+  const defaultBx = Math.round(fromX + (toX - fromX) * 0.4)
+
+  const clear = bx =>
+    !vertSegBlocked(bx, fromY, toY, obs) &&
+    !horizSegBlocked(fromY, fromX, bx, obs) &&
+    !horizSegBlocked(toY,   bx,    toX, obs)
+
+  if (clear(defaultBx)) return defaultBx
+
+  // Candidates: block edges + close-to-pin fallbacks
+  const cands = new Set([fromX + 14, toX - 14])
+  obs.forEach(b => {
+    cands.add(b.x - ROUTE_PAD - 2)
+    cands.add(b.x + b.width + ROUTE_PAD + 2)
+  })
+
+  const sorted = [...cands]
+    .filter(cx => cx > fromX + 4 && cx < toX - 4)
+    .sort((a, b) => Math.abs(a - defaultBx) - Math.abs(b - defaultBx))
+
+  for (const cx of sorted) {
+    if (clear(Math.round(cx))) return Math.round(cx)
+  }
+  return defaultBx  // fallback — no clear path found
+}
+
+/**
+ * For a backward U-route (toX ≤ fromX + 2) find the routeY closest to the
+ * default (min(fromY,toY) − 36) that keeps the top horizontal channel clear.
+ */
+function findClearRouteY(fromX, fromY, toX, toY, obs) {
+  const stub     = 28
+  const rx1      = fromX + stub
+  const rx2      = toX  - stub
+  const defaultY = Math.min(fromY, toY) - 36
+
+  if (!horizSegBlocked(defaultY, rx1, rx2, obs)) return defaultY
+
+  // Find the topmost blocking block's top edge and go above it
+  const tops = obs
+    .filter(b => Math.max(rx1, rx2) > b.x + ROUTE_PAD && Math.min(rx1, rx2) < b.x + b.width - ROUTE_PAD)
+    .map(b => b.y)
+  if (tops.length === 0) return defaultY
+  return Math.min(defaultY, Math.min(...tops) - ROUTE_PAD - 10)
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -346,16 +420,37 @@ export function computeWires(blocks, moduleData) {
       if (uniqueLoads.length === 0) return
 
       if (uniqueLoads.length === 1) {
-        // ── Single load: standard orthogonal Z-bend / U-route ──────────
-        const load = uniqueLoads[0]
-        wires.push({
+        // ── Single load: obstacle-aware orthogonal Z-bend / U-route ────
+        const load  = uniqueLoads[0]
+        const fX = driver.pin.x, fY = driver.pin.y
+        const tX = load.pin.x,   tY = load.pin.y
+        // Obstacles: every block except the source and target
+        const obs = blocks.filter(b => b.id !== driver.blockId && b.id !== load.blockId)
+
+        const wireObj = {
           id:          `${net}__${driver.blockId}__${load.blockId}`,
           net,
-          fromX: driver.pin.x, fromY: driver.pin.y,
-          toX:   load.pin.x,   toY:   load.pin.y,
+          fromX: fX, fromY: fY,
+          toX:   tX, toY:   tY,
           fromBlockId: driver.blockId,
           toBlockId:   load.blockId,
-        })
+        }
+
+        if (Math.abs(tY - fY) >= 0.5) {
+          if (tX > fX + 2) {
+            // Forward Z-bend — find obstacle-free bendX
+            const clearBx  = findClearBendX(fX, fY, tX, tY, obs)
+            const defaultBx = Math.round(fX + (tX - fX) * 0.4)
+            if (clearBx !== defaultBx) wireObj._bendX = clearBx
+          } else {
+            // Backward U-route — find obstacle-free routeY
+            const clearRY   = findClearRouteY(fX, fY, tX, tY, obs)
+            const defaultRY = Math.min(fY, tY) - 36
+            if (clearRY !== defaultRY) wireObj._routeY = clearRY
+          }
+        }
+
+        wires.push(wireObj)
       } else {
         // ── Multi-fanout: trunk → vertical bus → branches ──────────────
         //
@@ -424,29 +519,29 @@ export function computeWires(blocks, moduleData) {
 
   const bendGroups = {}
   wires.forEach(w => {
-    if (w._straight) return                    // junction-tree segments: skip
-    if (w.toX <= w.fromX + 2) return           // U-route (backward): skip
+    if (w._straight) return                       // junction-tree segments: skip
+    if (w.toX <= w.fromX + 2) return              // U-route (backward): skip
     if (Math.abs(w.toY - w.fromY) < 0.5) return  // pure horizontal: skip
-    const bx = Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
+    // Group by the obstacle-aware bendX (already computed) or the default
+    const bx = w._bendX ?? Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
     ;(bendGroups[bx] = bendGroups[bx] || []).push(w)
   })
 
   Object.values(bendGroups).forEach(group => {
     if (group.length < 2) return
-    // Check whether any two wires share an overlapping Y range at this bendX
     const ranges = group.map(w => [Math.min(w.fromY, w.toY), Math.max(w.fromY, w.toY)])
     const hasOverlap = ranges.some((r, i) =>
       ranges.some((r2, j) => j > i && r[0] < r2[1] && r2[0] < r[1])
     )
     if (!hasOverlap) return
 
-    // Sort by vertical-segment mid-point, then spread evenly around default bendX
+    // Sort by vertical-segment mid-point, spread evenly around the group's shared bendX
     group.sort((a, b) => (a.fromY + a.toY) / 2 - (b.fromY + b.toY) / 2)
     const n    = group.length
     const half = Math.floor(n / 2)
     group.forEach((w, i) => {
-      const defaultBx = Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
-      w._bendX = defaultBx + (i - half) * SPREAD_PX
+      const baseBx = w._bendX ?? Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
+      w._bendX = baseBx + (i - half) * SPREAD_PX
     })
   })
 

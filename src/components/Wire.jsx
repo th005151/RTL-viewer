@@ -18,7 +18,7 @@ const WIRE_W_TR   = 2.5
  *   ┌─────────┘
  *   └── toPin
  */
-function buildPath(fromX, fromY, toX, toY, bendXOvr) {
+function buildPath(fromX, fromY, toX, toY, bendXOvr, routeYOvr) {
   // Pure horizontal — no bends needed
   if (Math.abs(toY - fromY) < 0.5) {
     return `M ${fromX} ${fromY} L ${toX} ${toY}`
@@ -40,7 +40,7 @@ function buildPath(fromX, fromY, toX, toY, bendXOvr) {
   const stub   = 28
   const rx1    = fromX + stub
   const rx2    = toX  - stub
-  const routeY = Math.min(fromY, toY) - 36
+  const routeY = routeYOvr !== undefined ? routeYOvr : Math.min(fromY, toY) - 36
   return (
     `M ${fromX} ${fromY} ` +
     `L ${rx1}   ${fromY} ` +
@@ -57,7 +57,7 @@ function buildPath(fromX, fromY, toX, toY, bendXOvr) {
  * - Horizontal: midpoint of the line
  * - Backward (U-route): midpoint of the top horizontal channel
  */
-function labelPos(fromX, fromY, toX, toY, bendXOvr) {
+function labelPos(fromX, fromY, toX, toY, bendXOvr, routeYOvr) {
   if (Math.abs(toY - fromY) < 0.5) {
     return { x: (fromX + toX) / 2, y: fromY - 6, anchor: 'middle' }
   }
@@ -68,18 +68,18 @@ function labelPos(fromX, fromY, toX, toY, bendXOvr) {
   }
   const rx1    = fromX + 28
   const rx2    = toX  - 28
-  const routeY = Math.min(fromY, toY) - 36
+  const routeY = routeYOvr !== undefined ? routeYOvr : Math.min(fromY, toY) - 36
   return { x: (rx1 + rx2) / 2, y: routeY - 5, anchor: 'middle' }
 }
 
 export default function Wire({ wire, isTraced, onClick }) {
-  const { fromX, fromY, toX, toY, net, _straight, _noLabel, _bendX } = wire
+  const { fromX, fromY, toX, toY, net, _straight, _noLabel, _bendX, _routeY } = wire
   const d     = _straight
     ? `M ${fromX} ${fromY} L ${toX} ${toY}`
-    : buildPath(fromX, fromY, toX, toY, _bendX)
+    : buildPath(fromX, fromY, toX, toY, _bendX, _routeY)
   const color = isTraced ? WIRE_TRACED : WIRE_COLOR
   const width = isTraced ? WIRE_W_TR   : WIRE_W
-  const lp    = _noLabel ? null : labelPos(fromX, fromY, toX, toY, _bendX)
+  const lp    = _noLabel ? null : labelPos(fromX, fromY, toX, toY, _bendX, _routeY)
 
   return (
     <g onClick={() => onClick(net)} style={{ cursor: 'pointer' }}>
