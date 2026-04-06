@@ -176,6 +176,48 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
   // ── Output ports (last col) ──────────────────────────────────────
   outputs.forEach((port, i) => blocks.push(makePortBlock('output', port, outputCol, i)))
 
+  // ── Barycenter crossing-minimisation ────────────────────────────────────
+  // For each column (left → right) sort blocks so their stacking order
+  // matches the average row-index of the nets they consume from earlier
+  // columns.  Fewer crossings without moving blocks between columns.
+
+  const netInfo = {}   // net → { col, row }
+
+  // Seed with col-0 blocks (input ports + consts)
+  blocks.forEach(b => { if ((b._col ?? 0) === 0) updateNetInfo(b, netInfo) })
+
+  // Propagate simple wire-through assigns so output ports can see their source
+  moduleData.assigns?.forEach(({ target, expr }) => {
+    const src = baseName(expr)
+    if (src && netInfo[src] && !netInfo[target]) netInfo[target] = { ...netInfo[src] }
+  })
+
+  for (let col = 1; col <= outputCol; col++) {
+    const colBlocks = blocks.filter(b => (b._col ?? 0) === col)
+    if (colBlocks.length < 2) {
+      colBlocks.forEach(b => updateNetInfo(b, netInfo))
+      continue
+    }
+
+    colBlocks.forEach(b => {
+      const rows = getInputNets(b)
+        .map(n => netInfo[n])
+        .filter(info => info && info.col < col)
+        .map(info => info.row)
+      b._bc = rows.length ? rows.reduce((s, r) => s + r, 0) / rows.length : Infinity
+    })
+
+    colBlocks.sort((a, b) => a._bc - b._bc)
+    colBlocks.forEach((b, i) => { b._colIdx = i; updateNetInfo(b, netInfo) })
+  }
+
+  // Re-sort blocks array so x,y stacking matches the new column order
+  blocks.sort((a, b) => {
+    const ca = a._col ?? 0, cb = b._col ?? 0
+    if (ca !== cb) return ca - cb
+    return (a._colIdx ?? 0) - (b._colIdx ?? 0)
+  })
+
   // ── Assign x, y ─────────────────────────────────────────────────
   const colY = {}
   blocks.forEach(b => {
@@ -192,6 +234,7 @@ export function computeLayout(moduleData, netlist, savedPositions = {}) {
     }
     delete b._col
     delete b._colIdx
+    delete b._bc
   })
 
   blocks.forEach(b => setPinPositions(b))
@@ -373,6 +416,40 @@ export function computeWires(blocks, moduleData) {
     })
   })
 
+  // ── Spread overlapping parallel vertical segments ────────────────────────
+  // Two Z-bend wires with the same bendX column and overlapping Y ranges
+  // would print on top of each other.  Stagger their bendX by SPREAD_PX so
+  // each wire's vertical segment sits at a distinct X position.
+  const SPREAD_PX = 5
+
+  const bendGroups = {}
+  wires.forEach(w => {
+    if (w._straight) return                    // junction-tree segments: skip
+    if (w.toX <= w.fromX + 2) return           // U-route (backward): skip
+    if (Math.abs(w.toY - w.fromY) < 0.5) return  // pure horizontal: skip
+    const bx = Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
+    ;(bendGroups[bx] = bendGroups[bx] || []).push(w)
+  })
+
+  Object.values(bendGroups).forEach(group => {
+    if (group.length < 2) return
+    // Check whether any two wires share an overlapping Y range at this bendX
+    const ranges = group.map(w => [Math.min(w.fromY, w.toY), Math.max(w.fromY, w.toY)])
+    const hasOverlap = ranges.some((r, i) =>
+      ranges.some((r2, j) => j > i && r[0] < r2[1] && r2[0] < r[1])
+    )
+    if (!hasOverlap) return
+
+    // Sort by vertical-segment mid-point, then spread evenly around default bendX
+    group.sort((a, b) => (a.fromY + a.toY) / 2 - (b.fromY + b.toY) / 2)
+    const n    = group.length
+    const half = Math.floor(n / 2)
+    group.forEach((w, i) => {
+      const defaultBx = Math.round(w.fromX + (w.toX - w.fromX) * 0.4)
+      w._bendX = defaultBx + (i - half) * SPREAD_PX
+    })
+  })
+
   return { wires, junctions }
 }
 
@@ -395,6 +472,45 @@ function makePortBlock(dirKind, port, col, rowIndex) {
 
 function blockHeight(maxPins) {
   return Math.max(BLOCK_H_MIN, maxPins * PIN_SPACING + 24)
+}
+
+/** Return the list of net names consumed as inputs by a block. */
+function getInputNets(b) {
+  if (b.kind === 'gate')
+    return (b.inputs ?? []).filter(n => n && !/^\d/.test(n))
+  if (b.kind === 'mux')
+    return [...(b.inputs ?? []), b.selNet].filter(n => n && !/^\d/.test(n))
+  if (b.kind === 'dff')
+    return [b.dNet, b.clkNet].filter(n => n && !/^\d/.test(n))
+  if (b.kind === 'output_port')
+    return [b.name]
+  if (b.kind === 'instance') {
+    return Object.entries(b.connections ?? {})
+      .filter(([p]) => b.portDirs?.[p] !== 'output')
+      .map(([, v]) => baseName(v))
+      .filter(n => n && !/^\d/.test(n))
+  }
+  return []
+}
+
+/** Register all nets driven by b into netInfo = { netName → { col, row } }. */
+function updateNetInfo(b, netInfo) {
+  const col = b._col ?? 0
+  const row = b._colIdx ?? 0
+  if (b.kind === 'input_port' || b.kind === 'inout_port') {
+    netInfo[b.name] = { col, row }
+  } else if (b.kind === 'const' || b.kind === 'gate' || b.kind === 'mux') {
+    if (b.outNet) netInfo[b.outNet] = { col, row }
+  } else if (b.kind === 'dff') {
+    if (b.regName) netInfo[b.regName] = { col, row }
+  } else if (b.kind === 'instance') {
+    Object.entries(b.connections ?? {}).forEach(([p, net]) => {
+      if (b.portDirs?.[p] === 'output') {
+        const n = baseName(net)
+        if (n) netInfo[n] = { col, row }
+      }
+    })
+  }
 }
 
 function setPinPositions(block) {

@@ -18,7 +18,7 @@ const WIRE_W_TR   = 2.5
  *   ┌─────────┘
  *   └── toPin
  */
-function buildPath(fromX, fromY, toX, toY) {
+function buildPath(fromX, fromY, toX, toY, bendXOvr) {
   // Pure horizontal — no bends needed
   if (Math.abs(toY - fromY) < 0.5) {
     return `M ${fromX} ${fromY} L ${toX} ${toY}`
@@ -26,10 +26,8 @@ function buildPath(fromX, fromY, toX, toY) {
 
   if (toX > fromX + 2) {
     // ── Forward: H → V → H, bend placed at 40% from source ──────────────
-    // Placing the bend near the source keeps long cross-column wires tidy
-    // (they run the long horizontal stretch at the destination's Y level)
     const gap   = toX - fromX
-    const bendX = Math.round(fromX + gap * 0.4)
+    const bendX = bendXOvr !== undefined ? bendXOvr : Math.round(fromX + gap * 0.4)
     return (
       `M ${fromX} ${fromY} ` +
       `L ${bendX}  ${fromY} ` +
@@ -39,10 +37,10 @@ function buildPath(fromX, fromY, toX, toY) {
   }
 
   // ── Backward / same-column: U-route above both ────────────────────────
-  const stub   = 28                        // horizontal stub out of each pin
+  const stub   = 28
   const rx1    = fromX + stub
   const rx2    = toX  - stub
-  const routeY = Math.min(fromY, toY) - 36 // channel above both endpoints
+  const routeY = Math.min(fromY, toY) - 36
   return (
     `M ${fromX} ${fromY} ` +
     `L ${rx1}   ${fromY} ` +
@@ -59,18 +57,15 @@ function buildPath(fromX, fromY, toX, toY) {
  * - Horizontal: midpoint of the line
  * - Backward (U-route): midpoint of the top horizontal channel
  */
-function labelPos(fromX, fromY, toX, toY) {
+function labelPos(fromX, fromY, toX, toY, bendXOvr) {
   if (Math.abs(toY - fromY) < 0.5) {
-    // Horizontal — label at midpoint, slightly above
     return { x: (fromX + toX) / 2, y: fromY - 6, anchor: 'middle' }
   }
   if (toX > fromX + 2) {
-    // Forward Z-bend — label on the vertical segment, offset left
-    const bendX = Math.round(fromX + (toX - fromX) * 0.4)
+    const bendX = bendXOvr !== undefined ? bendXOvr : Math.round(fromX + (toX - fromX) * 0.4)
     const midY  = (fromY + toY) / 2
     return { x: bendX - 5, y: midY, anchor: 'end' }
   }
-  // Backward U-route — label at middle of top channel
   const rx1    = fromX + 28
   const rx2    = toX  - 28
   const routeY = Math.min(fromY, toY) - 36
@@ -78,13 +73,13 @@ function labelPos(fromX, fromY, toX, toY) {
 }
 
 export default function Wire({ wire, isTraced, onClick }) {
-  const { fromX, fromY, toX, toY, net, _straight, _noLabel } = wire
+  const { fromX, fromY, toX, toY, net, _straight, _noLabel, _bendX } = wire
   const d     = _straight
     ? `M ${fromX} ${fromY} L ${toX} ${toY}`
-    : buildPath(fromX, fromY, toX, toY)
+    : buildPath(fromX, fromY, toX, toY, _bendX)
   const color = isTraced ? WIRE_TRACED : WIRE_COLOR
   const width = isTraced ? WIRE_W_TR   : WIRE_W
-  const lp    = _noLabel ? null : labelPos(fromX, fromY, toX, toY)
+  const lp    = _noLabel ? null : labelPos(fromX, fromY, toX, toY, _bendX)
 
   return (
     <g onClick={() => onClick(net)} style={{ cursor: 'pointer' }}>
