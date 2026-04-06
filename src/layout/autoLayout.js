@@ -226,17 +226,14 @@ export function computeWires(blocks, moduleData) {
       })
 
     } else if (b.kind === 'dff') {
-      // D input
       ensure(b.dNet)
       const dPin = b.inPins[0]
       if (dPin) netMap[b.dNet].loads.push({ blockId: b.id, pin: dPin })
-      // CLK input
       if (b.clkNet) {
         ensure(b.clkNet)
         const clkPin = b.clkPins?.[0]
         if (clkPin) netMap[b.clkNet].loads.push({ blockId: b.id, pin: clkPin })
       }
-      // Q output (= regName net)
       ensure(b.regName)
       const qPin = b.outPins[0]
       if (qPin) netMap[b.regName].drivers.push({ blockId: b.id, pin: qPin })
@@ -258,20 +255,17 @@ export function computeWires(blocks, moduleData) {
       if (yPin) netMap[b.outNet].drivers.push({ blockId: b.id, pin: yPin })
 
     } else if (b.kind === 'mux') {
-      // Data inputs
       b.inputs.forEach((net, i) => {
         if (!net || /^\d/.test(net)) return
         ensure(net)
         const pin = b.inPins[i]
         if (pin) netMap[net].loads.push({ blockId: b.id, pin })
       })
-      // Sel input
       if (b.selNet) {
         ensure(b.selNet)
         const selPin = b.selPins?.[0]
         if (selPin) netMap[b.selNet].loads.push({ blockId: b.id, pin: selPin })
       }
-      // Y output
       ensure(b.outNet)
       const yPin = b.outPins[0]
       if (yPin) netMap[b.outNet].drivers.push({ blockId: b.id, pin: yPin })
@@ -287,9 +281,10 @@ export function computeWires(blocks, moduleData) {
     netMap[target]._assignSrc = src
   })
 
-  // Build wire segments
-  const wires = []
-  const seen  = new Set()
+  // Build wire segments + junction dots
+  const wires     = []
+  const junctions = []
+  const seen      = new Set()
 
   Object.entries(netMap).forEach(([net, { drivers, loads, _assignSrc }]) => {
     const actualDrivers = _assignSrc && netMap[_assignSrc]
@@ -297,26 +292,88 @@ export function computeWires(blocks, moduleData) {
       : drivers
 
     actualDrivers.forEach(driver => {
+      // Collect unique loads for this driver
+      const uniqueLoads = []
       loads.forEach(load => {
         const id = `${net}__${driver.blockId}__${load.blockId}`
         if (seen.has(id)) return
         seen.add(id)
+        uniqueLoads.push(load)
+      })
+      if (uniqueLoads.length === 0) return
+
+      if (uniqueLoads.length === 1) {
+        // ── Single load: standard orthogonal Z-bend / U-route ──────────
+        const load = uniqueLoads[0]
         wires.push({
-          id,
+          id:          `${net}__${driver.blockId}__${load.blockId}`,
           net,
-          fromX: driver.pin.x,
-          fromY: driver.pin.y,
-          toX:   load.pin.x,
-          toY:   load.pin.y,
+          fromX: driver.pin.x, fromY: driver.pin.y,
+          toX:   load.pin.x,   toY:   load.pin.y,
           fromBlockId: driver.blockId,
           toBlockId:   load.blockId,
-          isClk: net === load.pin?.name && load.pin?.name === 'clk',
         })
-      })
+      } else {
+        // ── Multi-fanout: trunk → vertical bus → branches ──────────────
+        //
+        //  driver ──┬── load0
+        //            │
+        //            ├── load1
+        //            │
+        //            └── load2
+        //
+        // jX is a vertical "bus column" 40 px past the driver pin.
+        const jX   = driver.pin.x + 40
+        const dY   = driver.pin.y
+        const loadYs = uniqueLoads.map(l => l.pin.y)
+        const minY   = Math.min(dY, ...loadYs)
+        const maxY   = Math.max(dY, ...loadYs)
+
+        // Trunk (driver → junction column, carries the net label)
+        wires.push({
+          id: `${net}__trunk__${driver.blockId}`,
+          net,
+          fromX: driver.pin.x, fromY: dY,
+          toX:   jX,           toY:   dY,
+          fromBlockId: driver.blockId, toBlockId: driver.blockId,
+          _straight: true,
+        })
+
+        // Vertical bus (no label, no click area — purely structural)
+        if (maxY > minY) {
+          wires.push({
+            id: `${net}__bus__${driver.blockId}`,
+            net,
+            fromX: jX, fromY: minY,
+            toX:   jX, toY:   maxY,
+            fromBlockId: driver.blockId, toBlockId: driver.blockId,
+            _straight: true, _noLabel: true,
+          })
+        }
+
+        // Branches (junction column → each load pin, horizontal)
+        uniqueLoads.forEach(load => {
+          wires.push({
+            id: `${net}__branch__${driver.blockId}__${load.blockId}`,
+            net,
+            fromX: jX,         fromY: load.pin.y,
+            toX:   load.pin.x, toY:   load.pin.y,
+            fromBlockId: driver.blockId, toBlockId: load.blockId,
+            _straight: true, _noLabel: true,
+          })
+        })
+
+        // Junction dot where trunk meets bus
+        junctions.push({ x: jX, y: dY, net })
+        // Junction dots where each branch meets bus (skip if same Y as trunk)
+        loadYs.forEach(ly => {
+          if (Math.abs(ly - dY) > 0.5) junctions.push({ x: jX, y: ly, net })
+        })
+      }
     })
   })
 
-  return wires
+  return { wires, junctions }
 }
 
 // ── Layout helpers ──────────────────────────────────────────────────────────
@@ -442,9 +499,10 @@ function computeAllDepths(moduleData) {
   })
 
   moduleData.synthGates?.forEach(gate => {
+    if (gate.kind === 'const') return   // pre-seeded as depth-0 above; no inputs array
     vInsts.push({
       id: gate.id,
-      inputNets:  gate.inputs.filter(n => n && !/^\d/.test(n)),
+      inputNets:  (gate.inputs ?? []).filter(n => n && !/^\d/.test(n)),
       outputNets: [gate.outNet].filter(Boolean),
     })
   })

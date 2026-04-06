@@ -86,6 +86,7 @@ export const useSchematicStore = create((set, get) => ({
   // ── Computed layout (current view) ────────────────────────
   blocks: [],
   wires: [],
+  junctions: [],
 
   // ── Interaction ────────────────────────────────────────────
   tracedNets: new Set(),   // nets highlighted by trace
@@ -183,8 +184,8 @@ export const useSchematicStore = create((set, get) => ({
 
     try {
       const blocks = computeLayout(moduleData, netlist, saved)
-      const wires  = computeWires(blocks, moduleData)
-      set({ blocks, wires, parseError: null })
+      const { wires, junctions } = computeWires(blocks, moduleData)
+      set({ blocks, wires, junctions, parseError: null })
     } catch (e) {
       console.error('Layout error:', e)
       set({ parseError: `Layout error: ${e.message}` })

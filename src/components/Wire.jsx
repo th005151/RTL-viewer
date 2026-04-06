@@ -78,11 +78,13 @@ function labelPos(fromX, fromY, toX, toY) {
 }
 
 export default function Wire({ wire, isTraced, onClick }) {
-  const { fromX, fromY, toX, toY, net } = wire
-  const d     = buildPath(fromX, fromY, toX, toY)
+  const { fromX, fromY, toX, toY, net, _straight, _noLabel } = wire
+  const d     = _straight
+    ? `M ${fromX} ${fromY} L ${toX} ${toY}`
+    : buildPath(fromX, fromY, toX, toY)
   const color = isTraced ? WIRE_TRACED : WIRE_COLOR
   const width = isTraced ? WIRE_W_TR   : WIRE_W
-  const lp    = labelPos(fromX, fromY, toX, toY)
+  const lp    = _noLabel ? null : labelPos(fromX, fromY, toX, toY)
 
   return (
     <g onClick={() => onClick(net)} style={{ cursor: 'pointer' }}>
@@ -98,18 +100,20 @@ export default function Wire({ wire, isTraced, onClick }) {
         opacity={isTraced ? 1 : 0.75}
       />
 
-      {/* Net label — always visible */}
-      <text
-        x={lp.x}
-        y={lp.y}
-        textAnchor={lp.anchor}
-        fill={isTraced ? WIRE_TRACED : '#6b8caa'}
-        fontSize={9}
-        fontFamily="'Fira Code','Consolas',monospace"
-        style={{ pointerEvents: 'none' }}
-      >
-        {net}
-      </text>
+      {/* Net label — only on trunk / single-load wires */}
+      {lp && (
+        <text
+          x={lp.x}
+          y={lp.y}
+          textAnchor={lp.anchor}
+          fill={isTraced ? WIRE_TRACED : '#6b8caa'}
+          fontSize={9}
+          fontFamily="'Fira Code','Consolas',monospace"
+          style={{ pointerEvents: 'none' }}
+        >
+          {net}
+        </text>
+      )}
     </g>
   )
 }
